@@ -1,7 +1,14 @@
+import logging
 import json
 import os
+
 import bpy
+
 from . import algorithms
+
+
+logger = logging.getLogger(__name__)
+
 
 def populate_modifier(mod, m):
     mod.active = m['active']
@@ -18,6 +25,7 @@ def populate_modifier(mod, m):
     mod.coefficients[0] = m['coefficients'][0]
     mod.coefficients[1] = m['coefficients'][1]
 
+
 def populate_modifiers(modifiers, mlist):
     i = 0
     mod = modifiers[0]
@@ -27,7 +35,8 @@ def populate_modifiers(modifiers, mlist):
             i = i + 1
         else:
             mod = modifiers.new(m['type'])
-            populate_modifer(mod, m)
+            populate_modifier(mod, m)
+
 
 def populate_variable(v, var):
     face_rig = bpy.data.objects['MBLab_skeleton_face_rig']
@@ -40,7 +49,7 @@ def populate_variable(v, var):
     v.targets[0].transform_type = var['targets'][0]['transform_type']
     v.targets[0].bone_target = var['targets'][0]['bone_target']
 
-def build_drivers(drivers):
+def add_rm_drivers(drivers, add=True):
     # Iterate through each driver entry and create driver
     mesh = algorithms.get_active_body()
     mname = mesh.name
@@ -48,19 +57,27 @@ def build_drivers(drivers):
         shape_name = v['data_path'].strip('key_blocks["').strip('"].value')
         idx = bpy.data.objects[mname].data.shape_keys.key_blocks.find(shape_name)
         if idx == -1:
-            algorithms.print_log_report("CRITICAL", "{0} shape key not found".format(shape_name))
+            logger.critical("%s shape key not found", shape_name)
             continue
         check = bpy.data.objects[mname].data.shape_keys.animation_data and \
-                bpy.data.objects[mname].data.shape_keys.animation_data.drivers.\
-                    find(v['data_path'])
-        if check:
-            algorithms.print_log_report("CRITICAL", "{0} shape key already has animation data".format(shape_name))
+            bpy.data.objects[mname].data.shape_keys.animation_data.drivers.\
+            find(v['data_path'])
+        if check and add:
+            logger.critical("%s shape key already has animation data", shape_name)
             continue
 
         # NOTE: The call to driver_add adds a modifier of type GENERATOR
         # automatically
-        driver = bpy.data.objects[mname].data.shape_keys.key_blocks[idx]. \
-                    driver_add('value')
+        if add:
+            driver = bpy.data.objects[mname].data.shape_keys.key_blocks[idx]. \
+                        driver_add('value')
+        else:
+            rc = bpy.data.objects[mname].data.shape_keys.key_blocks[idx].\
+                    driver_remove('value')
+            if not rc:
+                print("failed to removed: ", shape_name, "idx=", idx)
+            continue
+
         # Populate the driver
         driver.hide = v['hide']
         driver.lock = v['lock']
@@ -76,23 +93,26 @@ def build_drivers(drivers):
             v = driver.driver.variables.new()
             populate_variable(v, var)
 
+
 def setup_face_rig():
     # check if the face rig is already imported
     if bpy.data.objects.find('MBLab_skeleton_face_rig') != -1:
-        algorithms.print_log_report("CRITICAL", "MBLab_skeleton_face_rig is already imported")
+        logger.critical("MBLab_skeleton_face_rig is already imported")
         return False
 
     data_path = algorithms.get_data_path()
 
     # Load the face rig
     if not data_path:
-        algorithms.print_log_report("CRITICAL", "{0} not found. Please check your Blender addons directory. Might need to reinstall ManuelBastioniLab".format(data_path))
+        logger.critical(
+            "%s not found. Please check your Blender addons directory. Might need to reinstall ManuelBastioniLab",
+            data_path)
         return False
 
     face_rig_blend = os.path.join(data_path, "humanoid_library.blend")
 
     if not os.path.exists(face_rig_blend):
-        algorithms.print_log_report("CRITICAL", "{0} not found. Might need to reinstall ManuelBastioniLab".format(face_rig_blend))
+        logger.critical("%s not found. Might need to reinstall ManuelBastioniLab", face_rig_blend)
         return False
 
     # append the rig
@@ -101,14 +121,14 @@ def setup_face_rig():
     try:
         bpy.ops.wm.append(filepath=file_path, filename="Face_Rig", directory=directory)
     except RuntimeError as e:
-        algorithms.print_log_report("CRITICAL", "{0}".format(str(e)))
+        logger.critical("%s", str(e))
         return False
 
     # Load face rig json file
     json_file = os.path.join(data_path, "face_rig", "expression_drivers.json")
 
     if not os.path.exists(json_file):
-        algorithms.print_log_report("CRITICAL", "{0} not found. Might need to reinstall ManuelBastioniLab".format(json_file))
+        logger.critical("%s not found. Might need to reinstall ManuelBastioniLab", json_file)
         return False
 
     with open(json_file, 'r') as f:
@@ -117,4 +137,39 @@ def setup_face_rig():
 
     return True
 
+def delete_face_rig():
+    # check if the face rig is already imported
+    facerig = bpy.data.objects.get('MBLab_skeleton_face_rig')
+    if not facerig:
+        logger.critical("face rig is not added")
+        return False
+
+    data_path = algorithms.get_data_path()
+
+    # load face rig json file
+    json_file = os.path.join(data_path, "face_rig", "expression_drivers.json")
+
+    if not os.path.exists(json_file):
+        logger.critical("%s not found. Might need to reinstall ManuelBastioniLab", json_file)
+        return False
+
+    with open(json_file, 'r') as f:
+        drivers = json.load(f)
+        add_rm_drivers(drivers, add=False)
+
+    # store the original selection
+    orig_selection = {}
+    for ob in bpy.context.scene.objects:
+        orig_selection[ob.name] = ob.select_get()
+        ob.select_set(False)
+
+    # delete the face rig
+    facerig.select_set(True)
+    bpy.ops.object.delete()
+
+    # restore the original selection
+    for ob in bpy.context.scene.objects:
+        ob.select_set(orig_selection[ob.name])
+
+    return True
 
